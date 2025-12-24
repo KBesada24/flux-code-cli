@@ -1,0 +1,38 @@
+# Flux CLI Configuration
+# Copy to ~/.config/flux/config.yaml
+
+# Default AI provider
+provider: ollama
+
+# Provider configurations
+providers:
+  ollama:
+    base_url: http://localhost:11434/v1
+    model: codellama:13b
+
+  openrouter:
+    api_key: ${OPENROUTER_API_KEY}
+    base_url: https://openrouter.ai/api/v1
+    model: anthropic/claude-3-haiku
+
+  groq:
+    api_key: ${GROQ_API_KEY}
+    base_url: https://api.groq.com/openai/v1
+    model: llama-3.1-70b-versatile
+
+  together:
+    api_key: ${TOGETHER_API_KEY}
+    base_url: https://api.together.xyz/v1
+    model: meta-llama/Llama-3-70b-chat-hf
+
+# UI preferences
+ui:
+  theme: dark
+  word_wrap: 80
+  show_tokens: true
+  syntax_highlighting: true
+
+# System prompt
+system_prompt: |
+  You are a helpful AI coding assistant. You help users with programming tasks,
+  code reviews, debugging, and explaining code concepts. Be concise and practical.

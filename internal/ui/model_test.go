@@ -29,8 +29,9 @@ func TestModelInit(t *testing.T) {
 	m := NewModel()
 	cmd := m.Init()
 
-	if cmd != nil {
-		t.Error("Init should return nil")
+	// Init now returns textarea.Blink command
+	if cmd == nil {
+		t.Error("Init should return a blink command for textarea")
 	}
 }
 

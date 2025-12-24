@@ -3,9 +3,12 @@ package ui
 import (
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/lipgloss"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/kbesada/flux-code-cli/internal/ui/components"
 )
 
 const exitPromptTimeout = 2 * time.Second
@@ -13,6 +16,12 @@ const exitPromptTimeout = 2 * time.Second
 type clearExitPromptMsg struct{}
 
 type Model struct {
+	// Components
+	input    components.Input
+	viewport components.Viewport
+	messages components.Messages
+
+	// State
 	width          int
 	height         int
 	ready          bool
@@ -22,14 +31,19 @@ type Model struct {
 }
 
 func NewModel() Model {
-	return Model{}
+	return Model{
+		input:    components.NewInput(),
+		messages: components.NewMessages(80),
+	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return nil
+	return textarea.Blink
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -44,7 +58,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Tick(exitPromptTimeout, func(t time.Time) tea.Msg {
 				return clearExitPromptMsg{}
 			})
-		case "esc", "q":
+		case "enter":
+			// Send message if input has content
+			if value := m.input.Value(); value != "" {
+				m.messages.Add(components.RoleUser, value)
+				m.input.Reset()
+				m.viewport.SetContent(m.messages.Render())
+				m.viewport.GotoBottom()
+				// Reset exit prompt on activity
+				m.showExitPrompt = false
+			}
+			return m, nil
+		default:
 			// Reset exit prompt on other keys
 			m.showExitPrompt = false
 		}
@@ -53,9 +78,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.handleResize()
 		m.ready = true
 	}
-	return m, nil
+
+	// Update input component
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	cmds = append(cmds, cmd)
+
+	// Update viewport component
+	m.viewport, cmd = m.viewport.Update(msg)
+	cmds = append(cmds, cmd)
+
+	return m, tea.Batch(cmds...)
 }
 
 func (m Model) View() string {
@@ -69,10 +105,26 @@ func (m Model) View() string {
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		m.renderHeader(),
-		m.renderMessages(),
-		m.renderInput(),
+		m.viewport.View(),
+		m.input.View(),
 		m.renderStatusBar(),
 	)
+}
+
+func (m *Model) handleResize() {
+	headerHeight := 1
+	statusHeight := 1
+	inputHeight := 5
+
+	viewportHeight := m.height - headerHeight - statusHeight - inputHeight
+	if viewportHeight < 1 {
+		viewportHeight = 1
+	}
+
+	m.viewport.SetSize(m.width, viewportHeight)
+	m.input.SetWidth(m.width - 4)
+	m.messages.SetWidth(m.width - 4)
+	m.viewport.SetContent(m.messages.Render())
 }
 
 func (m Model) renderHeader() string {
@@ -80,32 +132,12 @@ func (m Model) renderHeader() string {
 	return HeaderStyle.Width(m.width).Render(title)
 }
 
-func (m Model) renderMessages() string {
-	// Calculate available height for messages
-	// Header: 1 line, Input: 3 lines (with border), Status: 1 line
-	msgHeight := m.height - 5
-	if msgHeight < 1 {
-		msgHeight = 1
-	}
-
-	placeholder := "No messages yet. Type something to begin..."
-	return MessageAreaStyle.
-		Width(m.width).
-		Height(msgHeight).
-		Render(placeholder)
-}
-
-func (m Model) renderInput() string {
-	prompt := "> Type your message..."
-	return InputStyle.Width(m.width - 2).Render(prompt)
-}
-
 func (m Model) renderStatusBar() string {
 	var status string
 	if m.showExitPrompt {
 		status = ExitPromptStyle.Render("Press Ctrl+C again to exit")
 	} else {
-		status = "Ctrl+C to exit"
+		status = "Ctrl+C to exit • Enter to send"
 	}
 	return StatusBarStyle.Width(m.width).Render(status)
 }
