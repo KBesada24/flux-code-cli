@@ -57,6 +57,10 @@ func (m *Messages) Count() int {
 	return len(m.items)
 }
 
+func (m *Messages) Items() []Message {
+	return m.items
+}
+
 func (m Messages) Render() string {
 	var output strings.Builder
 
