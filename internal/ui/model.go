@@ -3,23 +3,37 @@ package ui
 import (
 	"time"
 
+	"context"
+
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/lipgloss"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/kbesada/flux-code-cli/internal/ai"
 	"github.com/kbesada/flux-code-cli/internal/ui/components"
 )
 
 const exitPromptTimeout = 2 * time.Second
 
 type clearExitPromptMsg struct{}
+type streamChunkMsg string
+type streamDoneMsg struct{}
+type streamErrMsg struct{ err error }
 
 type Model struct {
 	// Components
 	input    components.Input
 	viewport components.Viewport
 	messages components.Messages
+
+	// AI
+	aiClient     ai.Client
+	streaming    bool
+	streamBuf    string
+	streamEvents <-chan ai.StreamEvent
+	cancelFn     context.CancelFunc
+	err          error
 
 	// State
 	width          int
@@ -30,10 +44,11 @@ type Model struct {
 	showExitPrompt bool
 }
 
-func NewModel() Model {
+func NewModel(client ai.Client) Model {
 	return Model{
 		input:    components.NewInput(),
 		messages: components.NewMessages(80),
+		aiClient: client,
 	}
 }
 
@@ -48,6 +63,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
+			if m.streaming {
+				// Cancel current stream
+				if m.cancelFn != nil {
+					m.cancelFn()
+				}
+				m.streaming = false
+				return m, nil
+			}
+
 			now := time.Now()
 			if m.showExitPrompt && now.Sub(m.lastCtrlC) < exitPromptTimeout {
 				m.quitting = true
@@ -59,14 +83,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return clearExitPromptMsg{}
 			})
 		case "enter":
-			// Send message if input has content
-			if value := m.input.Value(); value != "" {
-				m.messages.Add(components.RoleUser, value)
-				m.input.Reset()
-				m.viewport.SetContent(m.messages.Render())
-				m.viewport.GotoBottom()
-				// Reset exit prompt on activity
-				m.showExitPrompt = false
+			if !m.streaming && m.input.Value() != "" {
+				return m, m.sendMessage()
 			}
 			return m, nil
 		default:
@@ -75,6 +93,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case clearExitPromptMsg:
 		m.showExitPrompt = false
+
+	case streamChunkMsg:
+		m.streamBuf += string(msg)
+		m.updateStreamingMessage()
+		return m, m.waitForNextChunk()
+
+	case streamDoneMsg:
+		m.finalizeStream()
+		if m.cancelFn != nil {
+			m.cancelFn()
+		}
+		return m, nil
+
+	case streamErrMsg:
+		m.err = msg.err
+		m.streaming = false
+		if m.cancelFn != nil {
+			m.cancelFn()
+		}
+		m.messages.Add(components.RoleAssistant,
+			"Error: "+msg.err.Error())
+		m.viewport.SetContent(m.messages.Render())
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -82,12 +124,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 	}
 
-	// Update input component
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	cmds = append(cmds, cmd)
+	// Update input component (only if not streaming)
+	if !m.streaming {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 
 	// Update viewport component
+	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
 
@@ -140,4 +185,89 @@ func (m Model) renderStatusBar() string {
 		status = "Ctrl+C to exit • Enter to send"
 	}
 	return StatusBarStyle.Width(m.width).Render(status)
+}
+
+func (m *Model) sendMessage() tea.Cmd {
+	userMsg := m.input.Value()
+	m.input.Reset()
+
+	// Add user message
+	m.messages.Add(components.RoleUser, userMsg)
+	m.viewport.SetContent(m.messages.Render())
+	m.viewport.GotoBottom()
+
+	// Start streaming
+	m.streaming = true
+	m.streamBuf = ""
+
+	// Set up cancellation context synchronously
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelFn = cancel
+
+	// Build history in main thread
+	history := m.buildMessageHistory()
+
+	// Start stream and store channel
+	m.streamEvents = m.aiClient.Stream(ctx, history)
+
+	return m.waitForNextChunk()
+}
+
+func (m *Model) waitForNextChunk() tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-m.streamEvents
+		if !ok {
+			return streamDoneMsg{}
+		}
+
+		if event.Error != nil {
+			return streamErrMsg{err: event.Error}
+		}
+		if event.Done {
+			return streamDoneMsg{}
+		}
+		if event.Content != "" {
+			return streamChunkMsg(event.Content)
+		}
+		return nil // Continue waiting if empty content but not done
+	}
+}
+
+func (m *Model) buildMessageHistory() []ai.Message {
+	var history []ai.Message
+
+	// Add system prompt if configured
+	// history = append(history, ai.Message{Role: "system", Content: systemPrompt})
+
+	for _, msg := range m.messages.Items() {
+		history = append(history, ai.Message{
+			Role:    string(msg.Role),
+			Content: msg.Content,
+		})
+	}
+
+	return history
+}
+
+func (m *Model) updateStreamingMessage() {
+	// Render messages + current streaming buffer
+	content := m.messages.Render()
+	content += "\n" + m.renderStreamingIndicator() + m.streamBuf
+	m.viewport.SetContent(content)
+	m.viewport.GotoBottom()
+}
+
+func (m *Model) finalizeStream() {
+	m.messages.Add(components.RoleAssistant, m.streamBuf)
+	m.streamBuf = ""
+	m.streaming = false
+	m.viewport.SetContent(m.messages.Render())
+	m.viewport.GotoBottom()
+}
+
+func (m Model) renderStreamingIndicator() string {
+	return lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#00D4AA")).
+		Render("Assistant") + " (streaming...)\n"
 }
