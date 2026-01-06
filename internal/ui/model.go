@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/kbesada/flux-code-cli/internal/commands"
 	"github.com/kbesada/flux-code-cli/internal/ui/components"
 )
 
@@ -17,9 +18,10 @@ type clearExitPromptMsg struct{}
 
 type Model struct {
 	// Components
-	input    components.Input
-	viewport components.Viewport
-	messages components.Messages
+	input     components.Input
+	viewport  components.Viewport
+	messages  components.Messages
+	statusBar components.StatusBar
 
 	// State
 	width          int
@@ -32,12 +34,14 @@ type Model struct {
 
 func NewModel() Model {
 	return Model{
-		input:    components.NewInput(),
-		messages: components.NewMessages(80),
+		input:     components.NewInput(),
+		messages:  components.NewMessages(80),
+		statusBar: components.NewStatusBar(),
 	}
 }
 
 func (m Model) Init() tea.Cmd {
+	m.statusBar.Update()
 	return textarea.Blink
 }
 
@@ -59,18 +63,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return clearExitPromptMsg{}
 			})
 		case "enter":
-			// Send message if input has content
-			if value := m.input.Value(); value != "" {
-				m.messages.Add(components.RoleUser, value)
+			value := m.input.Value()
+			if value == "" {
+				return m, nil
+			}
+
+			// Check for commands
+			if commands.IsCommand(value) {
 				m.input.Reset()
+				cmd := commands.Parse(value)
+				result := commands.ExecuteGitCommand(cmd)
+
+				if result.Error != nil {
+					m.messages.Add(components.RoleSystem, "Error: "+result.Error.Error())
+				} else if result.Output != "" {
+					if result.AddToChat {
+						m.messages.Add(components.RoleUser, value)
+						m.messages.Add(components.RoleSystem, result.Output)
+					} else {
+						m.messages.Add(components.RoleSystem, result.Output)
+					}
+				}
 				m.viewport.SetContent(m.messages.Render())
 				m.viewport.GotoBottom()
-				// Reset exit prompt on activity
 				m.showExitPrompt = false
+				return m, nil
 			}
+
+			// Send regular message
+			m.messages.Add(components.RoleUser, value)
+			m.input.Reset()
+			m.viewport.SetContent(m.messages.Render())
+			m.viewport.GotoBottom()
+			m.showExitPrompt = false
 			return m, nil
+
 		default:
-			// Reset exit prompt on other keys
 			m.showExitPrompt = false
 		}
 	case clearExitPromptMsg:
@@ -82,14 +110,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 	}
 
-	// Update input component
+	// Update components
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	cmds = append(cmds, cmd)
 
-	// Update viewport component
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
+
+	// In a real app we might want to update status bar on certain events
+	// m.statusBar.Update()
 
 	return m, tea.Batch(cmds...)
 }
@@ -125,6 +155,7 @@ func (m *Model) handleResize() {
 	m.input.SetWidth(m.width - 4)
 	m.messages.SetWidth(m.width - 4)
 	m.viewport.SetContent(m.messages.Render())
+	m.statusBar.SetWidth(m.width)
 }
 
 func (m Model) renderHeader() string {
@@ -133,11 +164,8 @@ func (m Model) renderHeader() string {
 }
 
 func (m Model) renderStatusBar() string {
-	var status string
 	if m.showExitPrompt {
-		status = ExitPromptStyle.Render("Press Ctrl+C again to exit")
-	} else {
-		status = "Ctrl+C to exit • Enter to send"
+		return StatusBarStyle.Width(m.width).Render("Press Ctrl+C again to exit")
 	}
-	return StatusBarStyle.Width(m.width).Render(status)
+	return m.statusBar.View()
 }

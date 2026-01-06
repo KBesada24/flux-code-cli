@@ -8,9 +8,11 @@ type Config struct {
 }
 
 type Provider struct {
-	APIKey  string `mapstructure:"api_key"`
-	BaseURL string `mapstructure:"base_url"`
-	Model   string `mapstructure:"model"`
+	APIKey     string `mapstructure:"api_key"`
+	BaseURL    string `mapstructure:"base_url"`
+	Model      string `mapstructure:"model"`
+	AuthHeader string `mapstructure:"auth_header"`
+	AuthPrefix string `mapstructure:"auth_prefix"`
 }
 
 type UIConfig struct {

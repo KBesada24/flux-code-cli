@@ -42,6 +42,10 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]Provider)
+	}
+
 	// Expand environment variables in API keys
 	for name, provider := range cfg.Providers {
 		provider.APIKey = os.ExpandEnv(provider.APIKey)
